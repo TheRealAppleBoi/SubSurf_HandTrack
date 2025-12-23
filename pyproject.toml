@@ -3,6 +3,8 @@ name = "subsurf-handtrack"
 version = "0.1.0"
 requires-python = ">=3.10"
 dependencies = [
+    "huggingface-hub>=1.2.3",
     "mediapipe>=0.10.21",
     "opencv-python>=4.11.0.86",
+    "torch>=2.9.1",
 ]

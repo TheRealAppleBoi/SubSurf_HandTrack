@@ -5,14 +5,23 @@ import mediapipe as mp
 import time
 import math
 import numpy as np
+import torch
+import os
+from huggingface_hub import hf_hub_download
+
+from pgr_mlp import PointerMLP
 
 class HandController:
-    def __init__(self, width=600, height=500, control_threshold=0.06, thres_x=0.1, thres_y=0.1):
+    def __init__(self, width=600, height=500, control_threshold=0.9999):
         self.control_mode = False
         self.control_threshold = control_threshold
-        self.THRES_X = thres_x
-        self.THRES_Y = thres_y
-        self.prev_center = None
+
+        self.repo_id = "TheRealAppleBoi/pointer_gesture_recognizer"
+        self.model_filename = "pointer_model.pth"
+        self.local_dir = "./models"
+        os.makedirs(self.local_dir, exist_ok=True)
+
+        self.pgr = self.load_model()
 
         self.window_titles = ["Hand Capture", "Virtual Buttons"]
         self.button_pressed = "Center"
@@ -38,6 +47,24 @@ class HandController:
         self.finger_ips = [3, 7, 11, 15, 19]
         self.wrist = 0
     
+    def load_model(self):
+        local_model_path = os.path.join(self.local_dir, self.model_filename)
+        if not os.path.exists(local_model_path):
+            print("Downloading model from Hugging Face...")
+            local_model_path = hf_hub_download(repo_id=self.repo_id, 
+                                               filename=self.model_filename, 
+                                               local_dir=self.local_dir,
+                                               repo_type="model")
+            print("Downloaded to:", local_model_path)
+        else:
+            print("Model already exists locally:", local_model_path)
+
+        model = PointerMLP(input_size=21)
+        model.load_state_dict(torch.load(local_model_path))
+        model.eval()
+        print("Model loaded successfully!")
+        return model
+    
     def distance(self, x1, x2, y1, y2, z1=None, z2=None):
         if z1!=None and z2!=None:
             return math.sqrt((x1-x2)**2+(y1-y2)**2+(z1-z2)**2)
@@ -45,25 +72,17 @@ class HandController:
 
     def check_control(self, landmark):
         """return True when making a pointer"""
-        folded = 0
-        for tip, mcp in zip(self.finger_ips[2:], self.finger_mcps[2:]):
-            if self.distance(landmark[tip].x, landmark[mcp].x, landmark[tip].y, landmark[mcp].y) < self.control_threshold:
-                folded+=1
+        wrist = landmark[self.wrist]
+        distances = []
+        for lm in landmark:
+            dist = self.distance(lm.x, wrist.x, lm.y, wrist.y, lm.z, wrist.z)
+            distances.append(dist)
 
-        index_tip = landmark[self.finger_tips[1]]
-        index_mcp = landmark[self.finger_mcps[1]]
-
-        open_index_finger = (
-            self.distance(index_tip.x, index_mcp.x, index_tip.y, index_mcp.y, landmark[tip].z, landmark[mcp].z) > self.control_threshold
-        )
-
-        # closed_thumb = (
-        #     abs(landmark[self.finger_ip[0]].x - landmark[self.finger_ip[1]].x) < self.control_threshold and 
-        #     abs(landmark[self.finger_ip[0]].y - landmark[self.finger_ip[1]].y) < self.control_threshold
-        #     )
-
-        # return folded==3 and open_index_finger
-        return True
+        if self.pgr is not None:
+            output = self.pgr(torch.tensor(distances, dtype=torch.float32).unsqueeze(0))
+            pred = (output > self.control_threshold).int().item()
+            return bool(pred), output
+        return False, None
     
     def find_control_point(self, landmark, frame):
         cx, cy = landmark[self.finger_tips[1]].x, landmark[self.finger_tips[1]].y 
@@ -72,8 +91,8 @@ class HandController:
         cv2.circle(frame, (x, y), 20, (255,0,255), -1)
         return cx, cy
     
-    def draw_info(self, frame, text):
-        cv2.putText(frame, text, (20, 40),
+    def draw_info(self, frame, text, pos=(20, 40)):
+        cv2.putText(frame, text, pos,
         cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
     
     def draw_buttons(self, frame):
@@ -157,9 +176,11 @@ class HandController:
                     self.drawing_styles.get_default_hand_connections_style()
                     )
 
-                control_mode = self.check_control(hand_landmarks.landmark)
-                mode_text = "Pointer (Control Mode)" if control_mode else "Open (Idle)"
+                control_mode, conf = self.check_control(hand_landmarks.landmark)
+                mode_text = f"Pointer (Control Mode)" if control_mode else "Open (Idle)"
                 self.draw_info(hand_frame, mode_text)
+                if conf:
+                    self.draw_info(hand_frame, f"{float(conf):.4f}", (20, 80))
 
                 if control_mode:
                     cx, cy = self.find_control_point(hand_landmarks.landmark, hand_frame)
