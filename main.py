@@ -16,6 +16,10 @@ class HandController:
         self.control_mode = False
         self.control_threshold = control_threshold
 
+        self.last_hand_landmarks = None
+        self.last_seen_time = 0
+        self.HAND_HOLD_TIME = 0.2
+
         self.repo_id = "TheRealAppleBoi/pointer_gesture_recognizer"
         self.model_filename = "pointer_model.pth"
         self.local_dir = "./models"
@@ -106,8 +110,8 @@ class HandController:
             widths[i] += 1 
 
         # Full height split: top (jump), middle (3 buttons), bottom (slide)
-        top_height = h // 6
-        bottom_height = h // 6
+        top_height = int(h * 0.3)
+        bottom_height = int(h * 0.3)
         center_height = h - top_height - bottom_height  # Exact middle height
 
         # Starting Y positions
@@ -165,9 +169,23 @@ class HandController:
 
             self.draw_buttons(button_frame)
 
+            current_time = time.time()
+
             if result.multi_hand_landmarks:
                 hand_landmarks = result.multi_hand_landmarks[0]
+                self.last_hand_landmarks = hand_landmarks
+                self.last_seen_time = current_time
+                hand_valid = True
                 # print(hand_landmarks)
+            else:
+                # Hand lost — check grace period
+                if self.last_hand_landmarks and (current_time - self.last_seen_time) < self.HAND_HOLD_TIME:
+                    hand_landmarks = self.last_hand_landmarks
+                    hand_valid = True
+                else:
+                    hand_valid = False
+            
+            if hand_valid:
                 self.mp_drawing.draw_landmarks(
                     hand_frame, 
                     hand_landmarks, 
@@ -201,6 +219,8 @@ class HandController:
                         case "Slide":
                             self.slide()
                     time.sleep(0.1)
+            else:
+                self.draw_info(hand_frame, "Hand Lost", (20, 40))
 
             cv2.imshow(self.window_titles[0], hand_frame)
             cv2.imshow(self.window_titles[1], button_frame)
